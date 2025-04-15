@@ -16,11 +16,8 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from api_utils import (
     setup_api, get_headers, check_api_status, list_workspaces, create_workspace, get_or_create_workspace,
-    list_workspace_documents, upload_file_to_anythingllm, update_workspace_embeddings, list_all_custom_documents,
-    get_documents_to_embed
+    list_workspace_documents, upload_file_to_anythingllm, update_workspace_embeddings, list_all_custom_documents
 )
-from crewai import Crew, Task
-from agents import coordenador, bibliotecario, financeiro
 
 # Desativar avisos de SSL inseguro
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
@@ -37,9 +34,8 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ANYTHINGLLM_API = os.getenv("ANYTHINGLLM_API")
 ANYTHINGLLM_API_KEY = os.getenv("ANYTHINGLLM_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not all([TELEGRAM_TOKEN, ANYTHINGLLM_API, ANYTHINGLLM_API_KEY, OPENAI_API_KEY]):
+if not all([TELEGRAM_TOKEN, ANYTHINGLLM_API, ANYTHINGLLM_API_KEY]):
     logger.error("Uma ou mais variáveis de ambiente estão ausentes. Verifique o arquivo .env.")
     exit(1)
 
@@ -47,6 +43,7 @@ if not all([TELEGRAM_TOKEN, ANYTHINGLLM_API, ANYTHINGLLM_API_KEY, OPENAI_API_KEY
 setup_api(ANYTHINGLLM_API, ANYTHINGLLM_API_KEY)
 
 # Arquivos de configuração locais
+FILE_MAP_FILE = "file_map.json"
 USER_MAP_FILE = "user_map.json"
 CHART_URL_LOG = "chart_urls.txt"
 EXPENSES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lançamentos")
@@ -55,6 +52,16 @@ GRAPHICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gráfic
 os.makedirs(EXPENSES_DIR, exist_ok=True)
 os.makedirs(DOCUMENTS_DIR, exist_ok=True)
 os.makedirs(GRAPHICS_DIR, exist_ok=True)
+
+def load_file_map():
+    if os.path.exists(FILE_MAP_FILE):
+        with open(FILE_MAP_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_file_map(file_map):
+    with open(FILE_MAP_FILE, "w") as f:
+        json.dump(file_map, f, indent=2)
 
 def load_user_map():
     if os.path.exists(USER_MAP_FILE):
@@ -152,6 +159,7 @@ def download_chart_image(chart_url):
         return None
 
 async def delete_document_from_anythingllm(docpath):
+    """Deleta completamente um documento do AnythingLLM pelo docpath."""
     url = f"{ANYTHINGLLM_API}/v1/document/delete"
     payload = {"location": docpath}
     headers = get_headers()
@@ -165,6 +173,7 @@ async def delete_document_from_anythingllm(docpath):
         return False
 
 async def remove_document_from_workspace(workspace_slug, docpath):
+    """Remove um documento do contexto do workspace."""
     url = f"{ANYTHINGLLM_API}/v1/workspace/{workspace_slug}/update-embeddings"
     payload = {"removes": [docpath]}
     headers = get_headers()
@@ -178,6 +187,7 @@ async def remove_document_from_workspace(workspace_slug, docpath):
         return False
 
 async def reset_chat(workspace_slug, session_id):
+    """Reseta o histórico do chat atual no AnythingLLM."""
     url = f"{ANYTHINGLLM_API}/v1/workspace/{workspace_slug}/chat/reset"
     payload = {"sessionId": session_id}
     headers = get_headers()
@@ -191,6 +201,7 @@ async def reset_chat(workspace_slug, session_id):
         return False
 
 async def process_manual_expense(message, user_id, username, workspace_slug, context):
+    """Processa despesas manuais, atualiza o arquivo JSON, deleta o antigo e reinsere no AnythingLLM."""
     try:
         import re
         pattern = r"(?:Gastei\s+)?(?:R\$|Real)?\s*(\d+(?:\.\d{2})?)\s*(?:com)?\s*([\w\s]+?)(?:\s+(hoje|ontem|\d{2}/\d{2}/\d{4}))?$"
@@ -202,6 +213,7 @@ async def process_manual_expense(message, user_id, username, workspace_slug, con
         value, description, date_str = match.groups()
         value = float(value)
 
+        # Determinar a data
         if not date_str or date_str.lower() == "hoje":
             date = datetime.now().strftime("%Y-%m-%d")
         elif date_str.lower() == "ontem":
@@ -209,6 +221,7 @@ async def process_manual_expense(message, user_id, username, workspace_slug, con
         else:
             date = datetime.strptime(date_str, "%d/%m/%Y").strftime("%Y-%m-%d")
 
+        # Criar entrada de despesa
         expense = {
             "date": date,
             "value": value,
@@ -216,36 +229,47 @@ async def process_manual_expense(message, user_id, username, workspace_slug, con
             "timestamp": int(time.time())
         }
 
+        # Nome do arquivo único por usuário na pasta lançamentos
         file_name = f"{username}/expenses_{user_id}.json"
         local_path = os.path.join(EXPENSES_DIR, file_name)
 
+        # Carregar despesas existentes ou criar nova lista
         if os.path.exists(local_path):
             with open(local_path, "r", encoding="utf-8") as f:
                 expenses = json.load(f)
         else:
             expenses = []
 
+        # Adicionar nova despesa
         expenses.append(expense)
 
+        # Salvar o arquivo atualizado localmente
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, "w", encoding="utf-8") as f:
             json.dump(expenses, f, ensure_ascii=False, indent=2)
 
-        workspace_docs = list_workspace_documents(workspace_slug)
-        for doc in workspace_docs:
-            docpath = doc.get("docpath")
-            if docpath and file_name in docpath:
-                await remove_document_from_workspace(workspace_slug, docpath)
-                await delete_document_from_anythingllm(docpath)
-                logger.info(f"Versão anterior do documento {file_name} removida: {docpath}")
+        # Verificar se o arquivo já está embedado e deletá-lo completamente
+        old_docpath = FILE_MAP.get(file_name)
+        if old_docpath:
+            await remove_document_from_workspace(workspace_slug, old_docpath)
+            if await delete_document_from_anythingllm(old_docpath):
+                del FILE_MAP[file_name]
+                save_file_map(FILE_MAP)
+            else:
+                await context.bot.send_message(chat_id=context._chat_id, text="Erro ao deletar o arquivo antigo do AnythingLLM.")
+                return
 
+        # Enviar o arquivo atualizado ao AnythingLLM
         upload_success, location = await upload_file_to_anythingllm(local_path, file_name)
         if not upload_success or not location:
             await context.bot.send_message(chat_id=context._chat_id, text="Erro ao enviar despesa ao AnythingLLM.")
             return
 
+        # Adicionar o novo arquivo ao contexto
         embedding_success = await update_workspace_embeddings(workspace_slug, adds=[location])
         if embedding_success:
+            FILE_MAP[file_name] = location
+            save_file_map(FILE_MAP)
             await context.bot.send_message(
                 chat_id=context._chat_id,
                 text=f"Despesa registrada: R$ {value:.2f} em '{description}' em {date}. Contexto atualizado!"
@@ -258,49 +282,60 @@ async def process_manual_expense(message, user_id, username, workspace_slug, con
         await context.bot.send_message(chat_id=context._chat_id, text=f"Erro: {str(e)}")
 
 async def chat_with_anythingllm(message, workspace_slug, session_id, update, context):
-    logger.info(f"Processando mensagem com CrewAI no workspace {workspace_slug} com sessionId {session_id}: '{message}'")
+    logger.info(f"Enviando mensagem para AnythingLLM no workspace {workspace_slug} com sessionId {session_id}: '{message}'")
+    url = f"{ANYTHINGLLM_API}/v1/workspace/{workspace_slug}/chat"
+    
     user_id = str(update.message.from_user.id)
     username = update.message.from_user.username or f"User{user_id}"
 
+    # Verificar se é uma despesa manual
     if message.lower().startswith("gastei"):
         await process_manual_expense(message, user_id, username, workspace_slug, context)
         return
 
-    # Configurar ferramentas do Bibliotecário com workspace e session_id dinâmicos
-    bibliotecario.tools = [
-        lambda x: fetch_anythingllm_chat(x, workspace_slug, session_id),
-        lambda _: fetch_workspace_documents(workspace_slug),
-        fetch_all_custom_documents
-    ]
-
-    # Criar a tarefa para o Coordenador
-    tarefa_coordenador = Task(
-        description=f"Analise a solicitação do gestor: '{message}'. Use o Bibliotecário para buscar dados no AnythingLLM e o Financeiro para cálculos financeiros, se necessário. Consolide a resposta.",
-        agent=coordenador,
-        expected_output="Resposta consolidada para o gestor"
-    )
-
-    # Criar a equipe com CrewAI
-    crew = Crew(
-        agents=[coordenador, bibliotecario, financeiro],
-        tasks=[tarefa_coordenador],
-        verbose=2
-    )
-
-    # Executar a equipe de forma assíncrona
+    enhanced_message = (
+        f"{message}. Quando solicitado um gráfico, use a ferramenta `create-chart` e retorne a URL do QuickChart no campo `chart.url` do response body da API, "
+        "sem incluir a URL no texto da resposta. Não use placeholders como '[Gráfico]' ou Markdown como '![Gráfico](URL)'. "
+        "Exemplo de resposta esperada: {{'textResponse': 'Aqui está o gráfico solicitado', 'chart': {{'url': 'https://quickchart.io/chart?c=...'}}}}."
+    ) if "@agent" in message and "gráfico" in message.lower() else message
+    
+    payload = {
+        "message": enhanced_message,
+        "mode": "chat",
+        "sessionId": session_id,
+        "attachments": []
+    }
+    
+    headers = get_headers()
     try:
-        result = await asyncio.to_thread(crew.kickoff)
-    except Exception as e:
-        logger.error(f"Erro ao executar CrewAI: {str(e)}")
-        result = f"Erro ao processar a solicitação: {str(e)}"
-
-    # Processar a resposta para gráficos
-    if "https://quickchart.io/chart?c=" in result:
-        import re
-        url_match = re.search(r'(https://quickchart\.io/chart\?c=[^\s\)]+)', result)
-        if url_match:
-            chart_url = url_match.group(0)
-            result = re.sub(r'!\[.*?\]\(https://quickchart\.io/chart\?c=[^\s\)]+\)', '', result).strip()
+        response = requests.post(url, json=payload, headers=headers, timeout=600, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        
+        text_response = data.get("textResponse", "")
+        sources = data.get("sources", [])
+        chart = data.get("chart", {})
+        chart_url = chart.get("url") if chart else None
+        
+        if not chart_url and "https://quickchart.io/chart?c=" in text_response:
+            import re
+            url_match = re.search(r'(https://quickchart\.io/chart\?c=[^\s\)]+)', text_response)
+            if url_match:
+                chart_url = url_match.group(0)
+                text_response = re.sub(r'!\[.*?\]\(https://quickchart\.io/chart\?c=[^\s\)]+\)', '', text_response).strip()
+        
+        if not text_response and not chart_url:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="Desculpe, não recebi nenhuma resposta ou gráfico.")
+            return
+        
+        if text_response:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=text_response)
+        
+        if sources:
+            sources_text = "\n\nFontes utilizadas:\n" + "\n".join([f"- {s['title']}: {s.get('chunk', 'N/A')}" for s in sources])
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=sources_text)
+        
+        if chart_url:
             processing_message = await context.bot.send_message(chat_id=update.effective_chat.id, text="Baixando gráfico...")
             fixed_chart_url = fix_chart_url(chart_url)
             save_chart_urls(chart_url, fixed_chart_url)
@@ -311,13 +346,10 @@ async def chat_with_anythingllm(message, workspace_slug, session_id, update, con
                 await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=processing_message.message_id)
             else:
                 await context.bot.send_message(chat_id=update.effective_chat.id, text="Erro ao baixar o gráfico.")
-
-    # Enviar a resposta de texto
-    if result:
-        result = result.replace("**", "")
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=result)
-    else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Desculpe, não recebi uma resposta válida.")
+        
+    except Exception as e:
+        logger.error(f"Erro ao comunicar com AnythingLLM: {str(e)}")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Erro: {str(e)}")
 
 async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global USER_WORKSPACE_MAP
@@ -328,7 +360,14 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     workspace_slug = USER_WORKSPACE_MAP[user_id]["workspace"]
-    files_to_embed = get_documents_to_embed(workspace_slug)
+    all_documents = list_all_custom_documents()
+    if not all_documents:
+        await update.message.reply_text("Nenhum documento encontrado para sincronizar.")
+        return
+    
+    workspace_docs = list_workspace_documents(workspace_slug)
+    embedded_locations = {doc.get("docpath") for doc in workspace_docs if doc.get("docpath")}
+    files_to_embed = [loc for loc in all_documents if loc not in embedded_locations]
     
     if not files_to_embed:
         await update.message.reply_text("Todos os documentos já estão sincronizados.")
@@ -452,7 +491,7 @@ async def documentos_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"Documentos embedados no seu contexto:\n{doc_list}")
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global USER_WORKSPACE_MAP
+    global USER_WORKSPACE_MAP, FILE_MAP
     user_id = str(update.message.from_user.id)
     if user_id not in USER_WORKSPACE_MAP:
         await update.message.reply_text("Use /start para configurar seu workspace primeiro.")
@@ -464,24 +503,21 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     file_name = " ".join(context.args)
     workspace_slug = USER_WORKSPACE_MAP[user_id]["workspace"]
-    
-    workspace_docs = list_workspace_documents(workspace_slug)
-    found = False
-    for doc in workspace_docs:
-        docpath = doc.get("docpath")
-        if docpath and file_name in docpath:
-            if await remove_document_from_workspace(workspace_slug, docpath):
-                found = True
-                await update.message.reply_text(f"Arquivo '{file_name}' removido do contexto com sucesso!")
-            else:
-                await update.message.reply_text(f"Erro ao remover '{file_name}' do contexto.")
-            break
-    
-    if not found:
+    docpath = FILE_MAP.get(file_name)
+
+    if not docpath:
         await update.message.reply_text(f"Arquivo '{file_name}' não encontrado no contexto.")
+        return
+
+    if await remove_document_from_workspace(workspace_slug, docpath):
+        del FILE_MAP[file_name]
+        save_file_map(FILE_MAP)
+        await update.message.reply_text(f"Arquivo '{file_name}' removido do contexto com sucesso!")
+    else:
+        await update.message.reply_text(f"Erro ao remover '{file_name}' do contexto.")
 
 async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global USER_WORKSPACE_MAP
+    global USER_WORKSPACE_MAP, FILE_MAP
     user_id = str(update.message.from_user.id)
     if user_id not in USER_WORKSPACE_MAP:
         await update.message.reply_text("Use /start para configurar seu workspace primeiro.")
@@ -493,21 +529,18 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     file_name = " ".join(context.args)
     workspace_slug = USER_WORKSPACE_MAP[user_id]["workspace"]
-    
-    workspace_docs = list_workspace_documents(workspace_slug)
-    found = False
-    for doc in workspace_docs:
-        docpath = doc.get("docpath")
-        if docpath and file_name in docpath:
-            if await remove_document_from_workspace(workspace_slug, docpath) and await delete_document_from_anythingllm(docpath):
-                found = True
-                await update.message.reply_text(f"Arquivo '{file_name}' deletado completamente do AnythingLLM!")
-            else:
-                await update.message.reply_text(f"Erro ao deletar '{file_name}'.")
-            break
-    
-    if not found:
+    docpath = FILE_MAP.get(file_name)
+
+    if not docpath:
         await update.message.reply_text(f"Arquivo '{file_name}' não encontrado no contexto.")
+        return
+
+    if await remove_document_from_workspace(workspace_slug, docpath) and await delete_document_from_anythingllm(docpath):
+        del FILE_MAP[file_name]
+        save_file_map(FILE_MAP)
+        await update.message.reply_text(f"Arquivo '{file_name}' deletado completamente do AnythingLLM!")
+    else:
+        await update.message.reply_text(f"Erro ao deletar '{file_name}'.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_message = (
@@ -545,7 +578,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await chat_with_anythingllm(message, workspace_slug, session_id, update, context)
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global USER_WORKSPACE_MAP
+    global USER_WORKSPACE_MAP, FILE_MAP
     user = update.message.from_user
     user_id = str(user.id)
     username = user.username if user.username else f"User{user_id}"
@@ -594,21 +627,15 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     async def process_file():
         try:
-            workspace_docs = list_workspace_documents(workspace_slug)
-            for doc in workspace_docs:
-                docpath = doc.get("docpath")
-                if docpath and file_name in docpath:
-                    await remove_document_from_workspace(workspace_slug, docpath)
-                    await delete_document_from_anythingllm(docpath)
-                    logger.info(f"Versão anterior do documento {file_name} removida: {docpath}")
-            
             upload_success, location = await upload_file_to_anythingllm(local_file_path, file_name)
             if not upload_success or not location:
                 await context.bot.send_message(chat_id=update.effective_chat.id, text="Erro ao enviar o arquivo.")
                 return
 
+            FILE_MAP[file_name] = location
+            save_file_map(FILE_MAP)
             if await update_workspace_embeddings(workspace_slug, adds=[location]):
-                await context.bot.send_message(chat_id=update.effective_chat.id, text="Arquivo adicionado e embedado no workspace!")
+                await context.bot.send_message(chat_id=update.effective_chat.id, text="Arquivo adicionado ao workspace!")
             else:
                 await context.bot.send_message(chat_id=update.effective_chat.id, text="Erro ao adicionar ao workspace.")
         except Exception as e:
@@ -624,6 +651,7 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 USER_WORKSPACE_MAP = {}
+FILE_MAP = {}
 TASK_QUEUE = Queue()
 
 def main():
@@ -632,8 +660,9 @@ def main():
         logger.error("API do AnythingLLM não está disponível.")
         sys.exit(1)
     
-    global USER_WORKSPACE_MAP
+    global USER_WORKSPACE_MAP, FILE_MAP
     USER_WORKSPACE_MAP = load_user_map()
+    FILE_MAP = load_file_map()
     
     logger.info("Bot iniciado.")
     
