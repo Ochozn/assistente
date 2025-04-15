@@ -1,37 +1,34 @@
 # Assistente Executivo IA
 
 ## Descrição do Projeto
-O Assistente Executivo IA é um sistema inteligente de automação e apoio à gestão, que utiliza agentes orquestrados pelo Crew AI para executar tarefas, responder perguntas, gerar relatórios, gráficos e resumos, tudo via Telegram. O AnythingLLM é utilizado exclusivamente como fonte de contexto e busca vetorizada de documentos. Todo o fluxo de agentes, decisões e automações é feito pelo Crew AI, com integração ao Telegram para interação com o usuário.
+O Assistente Executivo IA é um sistema inteligente de automação e apoio à gestão, que utiliza um bot Telegram integrado ao AnythingLLM para executar tarefas, responder perguntas, gerar relatórios, gráficos e resumos, tudo via Telegram. O AnythingLLM é utilizado exclusivamente como fonte de contexto e busca vetorizada de documentos. Todo o fluxo de automação, decisões e interações é feito pelo bot Python, sem Crew AI.
 
 ## Funcionalidades Principais
 - **Chatbot Telegram**: Interface principal para interação com o sistema.
-- **Orquestração de Agentes (Crew AI)**: Delegação automática de tarefas entre agentes especializados (coordenador, bibliotecário, financeiro, etc).
 - **Busca Contextual (AnythingLLM)**: Consulta e recuperação de informações em documentos via banco vetorizado do AnythingLLM.
 - **Processamento de Documentos**: Upload, indexação e consulta de PDFs, imagens e textos.
 - **Geração de Gráficos**: Criação automática de gráficos (QuickChart) a partir de comandos ou contexto de conversa.
 - **Resumos Executivos**: Geração de resumos automáticos de documentos e conversas.
 - **Ações Automatizadas**: Execução de comandos e automações personalizadas via chat.
 - **Histórico de Interações**: Registro e consulta de interações anteriores.
+- **Gestão de Despesas**: Registro e atualização de despesas manuais pelo Telegram, com sincronização automática no contexto.
 
 ## Arquitetura
-O sistema é composto por três componentes principais:
-- **Bot Telegram**: Interface de usuário para envio de mensagens, comandos e arquivos.
-- **Crew AI**: Orquestrador de agentes inteligentes, responsável por delegar tarefas e consolidar respostas.
-- **AnythingLLM**: Utilizado apenas para busca vetorizada e contexto de documentos, não para armazenamento.
+O sistema é composto por dois componentes principais:
+- **Bot Telegram (bot.py)**: Interface de usuário para envio de mensagens, comandos e arquivos, além de toda a lógica de automação e integração.
+- **AnythingLLM**: Utilizado apenas para busca vetorizada e contexto de documentos, não para armazenamento principal.
 
 ## Stack Tecnológica
 - **Backend**: Python 3.x
-- **Orquestração de Agentes**: Crew AI
 - **Busca Contextual**: AnythingLLM Desktop (apenas contexto)
 - **Interface de Usuário**: Bot Telegram
 - **Gerenciamento de Configuração**: Arquivos .env e JSON
 
 ## Requisitos
 - **Python 3.8+**
-- **Crew AI**
 - **AnythingLLM Desktop** (apenas para contexto)
 - **Token de Bot Telegram**
-- **Chave de API OpenAI**
+- **Chave de API AnythingLLM**
 
 ## Instalação
 ### Configuração do Ambiente
@@ -58,7 +55,6 @@ O sistema é composto por três componentes principais:
    TELEGRAM_TOKEN=seu-token-telegram
    ANYTHINGLLM_API=http://localhost:3001/api
    ANYTHINGLLM_API_KEY=sua-chave-api-local
-   OPENAI_API_KEY=sua-chave-openai
    ```
 
 ### Configuração do AnythingLLM Desktop
@@ -66,10 +62,6 @@ O sistema é composto por três componentes principais:
 2. Execute o AnythingLLM Desktop
 3. Configure sua chave de API nas configurações do aplicativo
 4. O servidor estará disponível em http://localhost:3001
-
-### Configuração do Crew AI
-1. As dependências do Crew AI já estão no requirements.txt
-2. Não é necessário configuração adicional além da chave OpenAI
 
 ## Uso
 1. Inicie o bot:
@@ -80,7 +72,9 @@ O sistema é composto por três componentes principais:
 3. Envie mensagens de texto para perguntas, comandos ou envie documentos para adicionar ao contexto
 4. Exemplos de comandos:
    - Envie arquivos PDF, imagens ou textos para análise automática
-   - Use `@agent` para acionar agentes específicos (ex: `@agent Crie um gráfico...`)
+   - Use frases como "Gastei R$ 20 com almoço hoje" para registrar despesas
+   - Use comandos como /novo_chat, /historico_chat, /reset, /documentos, /sync
+   - Solicite gráficos ou relatórios diretamente na conversa
 
 ## Segurança e Privacidade
 - Nunca compartilhe seu arquivo .env ou credenciais sensíveis.
@@ -89,16 +83,15 @@ O sistema é composto por três componentes principais:
 
 ## Fluxo de Funcionamento
 1. O usuário envia uma mensagem ou documento para o bot no Telegram
-2. O bot identifica o tipo de solicitação e aciona o Crew AI
-3. O Crew AI delega tarefas aos agentes apropriados (coordenador, bibliotecário, financeiro, etc)
-4. O agente bibliotecário consulta o AnythingLLM para buscar informações contextuais em documentos
-5. O bot responde ao usuário consolidando as informações e resultados
+2. O bot identifica o tipo de solicitação e aciona as funções apropriadas
+3. O bot consulta o AnythingLLM para buscar informações contextuais em documentos
+4. O bot responde ao usuário consolidando as informações e resultados
 
 ## Estrutura do Projeto
-- **bot.py**: Código principal do bot Telegram e orquestração do Crew AI
-- **agents.py**: Definição dos agentes e integração com AnythingLLM
+- **bot.py**: Código principal do bot Telegram e orquestração de automações
 - **api_utils.py**: Utilitários para comunicação com AnythingLLM
 - **user_map.json**: Mapeamento de usuários e workspaces
+- **file_map.json**: Mapeamento de arquivos enviados e suas localizações
 
 ## Contribuição
 Contribuições são bem-vindas! Por favor, siga estes passos:
