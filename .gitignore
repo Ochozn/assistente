@@ -34,10 +34,40 @@ venv.bak/
 *.swo
 *~
 
-# Environment Variables
+# Environment Variables e Segredos
 .env
 .env.local
 .env.*.local
+.env.*
+*.env
+*.secret
+*.secrets
+*.key
+*.pem
+*.crt
+*.pfx
+*.p12
+*.bak
+*.backup
+config.json
+config.yaml
+config.yml
+*.session
+
+# Outros arquivos sensíveis
+*.log
+*.sqlite3
+*.db
+*.db3
+*.pkl
+*.cache
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Outros
+node_modules/
 
 # Logs and Databases
 *.log
